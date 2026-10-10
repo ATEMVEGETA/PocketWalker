@@ -16,7 +16,10 @@
 
 namespace
 {
-constexpr std::array<char, 8> STATE_MAGIC = {'P', 'W', 'S', 'T', 'A', 'T', '0', '5'};
+constexpr std::array<char, 8> STATE_MAGIC = {'P', 'W', 'S', 'T', 'A', 'T', '0', '6'};
+constexpr std::array<char, 8> LEGACY_STATE_MAGIC = {'P', 'W', 'S', 'T', 'A', 'T', '0', '5'};
+constexpr uint16_t LEGACY_SSD1854_TOTAL_PAGES = 22;
+constexpr uint16_t LEGACY_SSD1854_MEM_SIZE = 128 * 2 * LEGACY_SSD1854_TOTAL_PAGES;
 constexpr uint32_t MAX_REASONABLE_STEPS = 9999999;
 constexpr auto RTC_CATCH_UP_STEP_STABLE_DELAY = std::chrono::milliseconds(1200);
 constexpr auto RTC_CATCH_UP_STEP_MAX_WAIT = std::chrono::seconds(8);
@@ -111,29 +114,42 @@ bool ReadCpuState(std::istream& stream, const std::shared_ptr<CPU>& cpu)
     return ReadValue(stream, cpu->sleep);
 }
 
-void WriteDisplayState(std::ostream& stream, const std::shared_ptr<SSD1854>& display)
+void WriteDisplayState(std::ostream& stream, const std::shared_ptr<NT7508>& display)
 {
-    for (uint16_t i = 0; i < SSD1854_MEM_SIZE; i++)
-        WriteValue(stream, display->draw_info.vram.Read8(i));
+    NT7508DrawInfo draw_info = display->GetDrawInfoSnapshot();
+    for (uint16_t i = 0; i < NT7508_MEM_SIZE; i++)
+        WriteValue(stream, draw_info.vram.Read8(i));
 
-    WriteValue(stream, display->draw_info.page_offset);
-    WriteValue(stream, display->draw_info.contrast);
-    WriteValue(stream, display->draw_info.power_save_mode);
+    WriteValue(stream, draw_info.initial_display_line);
+    WriteValue(stream, draw_info.contrast);
+    WriteValue(stream, draw_info.power_save);
 }
 
-bool ReadDisplayState(std::istream& stream, const std::shared_ptr<SSD1854>& display)
+bool ReadDisplayState(std::istream& stream, const std::shared_ptr<NT7508>& display, const bool legacy_state)
 {
-    for (uint16_t i = 0; i < SSD1854_MEM_SIZE; i++)
+    const uint16_t stored_size = legacy_state ? LEGACY_SSD1854_MEM_SIZE : NT7508_MEM_SIZE;
+    for (uint16_t i = 0; i < stored_size; i++)
     {
         uint8_t value = 0;
         if (!ReadValue(stream, value))
             return false;
-        display->draw_info.vram.Write8(i, value);
+        if (i < NT7508_MEM_SIZE)
+            display->draw_info.vram.Write8(i, value);
     }
 
-    return ReadValue(stream, display->draw_info.page_offset) &&
-           ReadValue(stream, display->draw_info.contrast) &&
-           ReadValue(stream, display->draw_info.power_save_mode);
+    uint8_t stored_display_line = 0;
+    if (!ReadValue(stream, stored_display_line) ||
+        !ReadValue(stream, display->draw_info.contrast) ||
+        !ReadValue(stream, display->draw_info.power_save))
+    {
+        return false;
+    }
+
+    display->draw_info.initial_display_line = legacy_state
+        ? static_cast<uint8_t>((stored_display_line * 8) & NT7508_INITIAL_DISPLAY_LINE_MAX)
+        : static_cast<uint8_t>(stored_display_line & NT7508_INITIAL_DISPLAY_LINE_MAX);
+    display->draw_info.contrast &= 0x3F;
+    return true;
 }
 }
 
@@ -152,9 +168,9 @@ PocketWalker::PocketWalker(RomBuffer rom_buffer)
     this->m95512 = std::make_shared<M95512>();
     this->soc->ssu->RegisterPeripheral(this->m95512, SSU_ADDR_PDR1, 2);
 
-    this->ssd1854 = std::make_shared<SSD1854>();
-    this->soc->ssu->RegisterPeripheral(this->ssd1854, SSU_ADDR_PDR1, 0);
-    this->soc->ssu->RegisterInputPin(this->ssd1854, SSU_ADDR_PDR1, 1, SSD1854_PIN_DC);
+    this->nt7508 = std::make_shared<NT7508>();
+    this->soc->ssu->RegisterPeripheral(this->nt7508, SSU_ADDR_PDR1, 0);
+    this->soc->ssu->RegisterInputPin(this->nt7508, SSU_ADDR_PDR1, 1, NT7508_PIN_DC);
 
     this->buzzer = std::make_shared<Buzzer>(this->soc->timer_w);
 
@@ -542,9 +558,9 @@ void PocketWalker::ReceiveIR(const uint8_t data)
     this->soc->sci3->ReceiveIR(data);
 }
 
-SSD1854DrawInfo* PocketWalker::GetDrawInfo()
+NT7508DrawInfo PocketWalker::GetDrawInfo() const
 {
-    return &this->ssd1854->draw_info;
+    return this->nt7508->GetDrawInfoSnapshot();
 }
 
 void PocketWalker::PressButton(ButtonType button) const
@@ -605,9 +621,9 @@ void PocketWalker::LoadRtcState(const std::string& path) const
     soc->rtc->LoadState(path);
 }
 
-SSD1854DrawInfo PocketWalker::GetDrawInfoSnapshot() const
+NT7508DrawInfo PocketWalker::GetDrawInfoSnapshot() const
 {
-    return this->ssd1854->GetDrawInfoSnapshot();
+    return this->nt7508->GetDrawInfoSnapshot();
 }
 
 void PocketWalker::LoadRtcState(std::istream& stream, const std::filesystem::path& base_directory) const
@@ -679,7 +695,8 @@ bool PocketWalker::LoadEmulatorState(std::istream& stream) const
 {
     std::array<char, STATE_MAGIC.size()> magic = {};
     stream.read(magic.data(), magic.size());
-    if (!stream || magic != STATE_MAGIC)
+    const bool legacy_state = magic == LEGACY_STATE_MAGIC;
+    if (!stream || (magic != STATE_MAGIC && !legacy_state))
         return false;
 
     if (!ReadCpuState(stream, soc->cpu))
@@ -754,9 +771,9 @@ bool PocketWalker::LoadEmulatorState(std::istream& stream) const
     if (!ReadValue(stream, soc->adc->ADSR.VALUE) || !ReadValue(stream, soc->adc->AMR.VALUE))
         return false;
 
-    if (!ReadDisplayState(stream, ssd1854))
+    if (!ReadDisplayState(stream, nt7508, legacy_state))
         return false;
-    if (!ssd1854->LoadEmulatorState(stream))
+    if (!nt7508->LoadEmulatorState(stream))
         return false;
 
     if (!soc->ssu->LoadEmulatorState(stream))
@@ -836,8 +853,8 @@ void PocketWalker::SaveEmulatorState(std::ostream& stream) const
     WriteValue(stream, soc->adc->ADSR.VALUE);
     WriteValue(stream, soc->adc->AMR.VALUE);
 
-    WriteDisplayState(stream, ssd1854);
-    ssd1854->SaveEmulatorState(stream);
+    WriteDisplayState(stream, nt7508);
+    nt7508->SaveEmulatorState(stream);
     soc->ssu->SaveEmulatorState(stream);
 }
 

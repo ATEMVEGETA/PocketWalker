@@ -67,18 +67,19 @@ void AndroidDisplayWidget::paintEvent(QPaintEvent*)
 
     if (emulator)
     {
-        SSD1854DrawInfo draw = emulator->GetDrawInfoSnapshot();
-        if (!draw.power_save_mode)
+        NT7508DrawInfo draw = emulator->GetDrawInfoSnapshot();
+        if (!draw.power_save)
         {
             for (int y = 0; y < SCREEN_HEIGHT; ++y)
             {
-                const int page = y / 8 + draw.page_offset;
-                const int page_offset = page * SSD1854_TOTAL_COLUMNS * SSD1854_COLUMN_SIZE;
-                const int bit = y % 8;
+                const int row = (y + draw.initial_display_line) % NT7508_GRAPHICS_HEIGHT;
+                const int page = row / 8;
+                const int page_offset = page * NT7508_TOTAL_COLUMNS * NT7508_COLUMN_SIZE;
+                const int bit = row % 8;
                 auto* scanline = reinterpret_cast<QRgb*>(frame.scanLine(y));
                 for (int x = 0; x < SCREEN_WIDTH; ++x)
                 {
-                    const int base = SSD1854_COLUMN_SIZE * x + page_offset;
+                    const int base = NT7508_COLUMN_SIZE * x + page_offset;
                     const uint8_t index = (((draw.vram.Read8(base) >> bit) & 1) << 1) |
                                           ((draw.vram.Read8(base + 1) >> bit) & 1);
                     scanline[x] = PALETTE[index];
