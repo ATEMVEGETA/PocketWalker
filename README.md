@@ -58,17 +58,6 @@ Prebuilt Android and standalone Windows versions are available from
 - Buzzer
 - IR Communications over TCP with [melonDS-IR](https://github.com/DaveuRrr/melonDS-IR)
 
-## Planned Features
-
-### Application
-
-#### Emulation Settings
-- Emulation Speed Multiplier
-- RTC Sync Mode
-
-#### IR Settings
-- UDP IR Communication Mode
-- Serial IR Communication Mode
 
 ## Building From Source
 
