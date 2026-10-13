@@ -97,3 +97,6 @@ pacman -S mingw-w64-x86_64-{gcc,cmake,ninja}
 ```
 
 The output binary will be located in `./release/`.
+
+## Development Note
+This project was developed with the assistance of OpenAI Codex (AI), which helped with coding, debugging, and implementing new features. I provided the ideas, requirements, and direction for the project, along with testing and feedback throughout development.
