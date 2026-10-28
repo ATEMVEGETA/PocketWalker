@@ -15,6 +15,8 @@
 #define AUDIO_MIN_FREQUENCY 120.0f
 #define AUDIO_FADE_SAMPLES (AUDIO_SAMPLE_RATE / 333)
 
+class BufferedAudioDevice;
+
 class QtAudioSystem : public QObject
 {
     Q_OBJECT
@@ -30,6 +32,9 @@ private:
 
     QAudioSink* sink = nullptr;
     QIODevice* device = nullptr;
+#ifdef __ANDROID__
+    BufferedAudioDevice* buffered_device = nullptr;
+#endif
 
     std::vector<int16_t> buffer;
     float phase = 0.0f;
