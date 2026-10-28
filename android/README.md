@@ -38,12 +38,14 @@ and shows catch-up progress before enabling the controls.
 ## Infrared networking
 
 The main screen provides separate Connect melonDS and Connect Peer Play
-buttons. The settings dialog keeps the optional melonDS PC address override:
+buttons. The settings dialog accepts an optional melonDS PC address override
+and provides a Find melonDS PC button for local-network discovery:
 
 - Connect melonDS makes the phone a TCP client. It first checks `127.0.0.1`
   for melonDS running on the same Android device, then tries the optional saved
-  PC address and local-network discovery on port 8081. The address field can be
-  left empty for automatic discovery.
+  PC address and local-network discovery on port 8081. Manual address changes
+  apply on Enter or when settings closes. Find melonDS PC clears the fixed
+  address, scans the current local network, and fills in the discovered host.
 - Automatic Peer Play discovers other Android PocketWalker instances on the
   same local network. Two devices elect their roles automatically and exchange
   the original emulated IR byte stream. Once paired, their busy advertisements

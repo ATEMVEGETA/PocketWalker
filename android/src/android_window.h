@@ -52,6 +52,7 @@ private:
     void setIrConnectionMode(int mode);
     QString irPcHost() const;
     void setIrPcHost(const QString& host);
+    void findMelonDsPc();
     QString peerDeviceId() const;
     QString dataDirectory() const;
     QString dataPath(const QString& filename) const;

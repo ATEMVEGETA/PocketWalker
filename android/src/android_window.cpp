@@ -333,7 +333,8 @@ void AndroidWindow::showSettingsDialog()
         layout->addSpacing(10);
         layout->addWidget(new QLabel("melonDS PC IP address", content));
         auto* automatic_note = new QLabel(
-            "Leave this empty to find melonDS automatically when you tap Connect melonDS.", content);
+            "Enter the address manually, or find a melonDS server on this network. "
+            "Manual changes apply when you press Enter or close settings.", content);
         automatic_note->setWordWrap(true);
         automatic_note->setStyleSheet("color: #aeb4ba; font-size: 12px; padding: 0 4px 2px 4px;");
         layout->addWidget(automatic_note);
@@ -342,7 +343,7 @@ void AndroidWindow::showSettingsDialog()
         ir_pc_host_edit->setInputMethodHints(Qt::ImhPreferNumbers);
         ir_pc_host_edit->setMinimumHeight(44);
         layout->addWidget(ir_pc_host_edit);
-        ir_pc_host_button = new QPushButton("Save PC address", content);
+        ir_pc_host_button = new QPushButton("Find melonDS PC", content);
         ir_pc_host_button->setMinimumHeight(48);
         layout->addWidget(ir_pc_host_button);
         layout->addStretch();
@@ -359,9 +360,14 @@ void AndroidWindow::showSettingsDialog()
             settings_dialog->close();
             chooseRomFile();
         });
-        connect(ir_pc_host_button, &QPushButton::clicked, this, [this] {
-            const QString host = ir_pc_host_edit->text().trimmed();
-            setIrPcHost(host);
+        connect(ir_pc_host_edit, &QLineEdit::returnPressed, this, [this] {
+            setIrPcHost(ir_pc_host_edit->text());
+        });
+        connect(ir_pc_host_button, &QPushButton::clicked,
+                this, &AndroidWindow::findMelonDsPc);
+        connect(settings_dialog, &QDialog::finished, this, [this](int) {
+            if (ir_pc_host_edit)
+                setIrPcHost(ir_pc_host_edit->text());
         });
         connect(close_button, &QPushButton::clicked, settings_dialog, &QDialog::close);
     }
@@ -687,6 +693,31 @@ void AndroidWindow::setIrPcHost(const QString& host)
         startEmulator();
     }
     updateSettingsDialog();
+}
+
+void AndroidWindow::findMelonDsPc()
+{
+    const QJniObject empty_host = QJniObject::fromString(QString());
+    QJniObject::callStaticObjectMethod(
+        ANDROID_ACTIVITY, "setIrPcHost", "(Ljava/lang/String;)Ljava/lang/String;",
+        empty_host.object<jstring>()).toString();
+
+    ir_pc_host_edit->clearFocus();
+    ir_pc_host_edit->clear();
+    ir_network_status.clear();
+
+    if (irConnectionMode() != IR_MODE_PC)
+        setIrConnectionMode(IR_MODE_PC);
+    else if (context)
+    {
+        stopEmulator(false);
+        startEmulator();
+    }
+    else
+        updateActionStates();
+
+    updateSettingsDialog();
+    updateConnectionControls();
 }
 
 QString AndroidWindow::peerDeviceId() const
