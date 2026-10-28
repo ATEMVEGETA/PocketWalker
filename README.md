@@ -58,17 +58,6 @@ Prebuilt Android and standalone Windows versions are available from
 - Buzzer
 - IR Communications over TCP with [melonDS-IR](https://github.com/DaveuRrr/melonDS-IR)
 
-## Planned Features
-
-### Application
-
-#### Emulation Settings
-- Emulation Speed Multiplier
-- RTC Sync Mode
-
-#### IR Settings
-- UDP IR Communication Mode
-- Serial IR Communication Mode
 
 ## Building From Source
 
@@ -108,3 +97,6 @@ pacman -S mingw-w64-x86_64-{gcc,cmake,ninja}
 ```
 
 The output binary will be located in `./release/`.
+
+## Development Note
+This project was developed with the assistance of OpenAI Codex (AI), which helped with coding, debugging, and implementing new features. I provided the ideas, requirements, and direction for the project, along with testing and feedback throughout development.
