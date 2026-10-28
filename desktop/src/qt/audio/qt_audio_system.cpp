@@ -30,28 +30,32 @@ public:
         if (!data || length <= 0 || ring.empty())
             return;
 
-        std::scoped_lock lock(mutex);
-        size_t count = static_cast<size_t>(length);
-        if (count >= ring.size())
         {
-            data += count - ring.size();
-            count = ring.size();
-            read_offset = 0;
-            buffered = 0;
+            std::scoped_lock lock(mutex);
+            size_t count = static_cast<size_t>(length);
+            if (count >= ring.size())
+            {
+                data += count - ring.size();
+                count = ring.size();
+                read_offset = 0;
+                buffered = 0;
+            }
+
+            const size_t overflow = buffered + count > ring.size()
+                ? buffered + count - ring.size()
+                : 0;
+            read_offset = (read_offset + overflow) % ring.size();
+            buffered -= overflow;
+
+            const size_t write_offset = (read_offset + buffered) % ring.size();
+            const size_t first = std::min(count, ring.size() - write_offset);
+            std::memcpy(ring.data() + write_offset, data, first);
+            if (count > first)
+                std::memcpy(ring.data(), data + first, count - first);
+            buffered += count;
         }
 
-        const size_t overflow = buffered + count > ring.size()
-            ? buffered + count - ring.size()
-            : 0;
-        read_offset = (read_offset + overflow) % ring.size();
-        buffered -= overflow;
-
-        const size_t write_offset = (read_offset + buffered) % ring.size();
-        const size_t first = std::min(count, ring.size() - write_offset);
-        std::memcpy(ring.data() + write_offset, data, first);
-        if (count > first)
-            std::memcpy(ring.data(), data + first, count - first);
-        buffered += count;
+        Q_EMIT readyRead();
     }
 
     bool isSequential() const override { return true; }
@@ -81,9 +85,7 @@ protected:
             buffered -= copied;
         }
 
-        if (copied < requested)
-            std::memset(data + copied, 0, requested - copied);
-        return max_length;
+        return static_cast<qint64>(copied);
     }
 
     qint64 writeData(const char*, qint64) override { return -1; }
