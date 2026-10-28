@@ -1,11 +1,10 @@
 #include "qt_audio_system.h"
 
 #include <QMediaDevices>
-#ifdef __ANDROID__
-#include <cstring>
-#include <mutex>
-#else
 #include <QThread>
+#ifdef __ANDROID__
+#include <QByteArray>
+#include <QTimer>
 #endif
 
 #include "desktop/src/qt/settings/app_settings.h"
@@ -13,107 +12,107 @@
 #ifdef __ANDROID__
 namespace
 {
-constexpr int AUDIO_SINK_BUFFER_MS = 60;
-constexpr int AUDIO_QUEUE_MS = 100;
+constexpr int AUDIO_SINK_BUFFER_MS = 120;
+constexpr int AUDIO_QUEUE_MS = 300;
+constexpr int AUDIO_DRAIN_INTERVAL_MS = 5;
+
+constexpr qsizetype AudioBytesForMs(const int milliseconds)
+{
+    return AUDIO_SAMPLE_RATE * static_cast<qsizetype>(sizeof(int16_t)) * milliseconds / 1000;
+}
 }
 
-class BufferedAudioDevice final : public QIODevice
+class AndroidAudioWorker final : public QObject
 {
 public:
-    explicit BufferedAudioDevice(const qsizetype capacity, QObject* parent = nullptr)
-        : QIODevice(parent), ring(static_cast<size_t>(capacity))
+    void Initialize()
     {
+        QAudioFormat format;
+        format.setSampleRate(AUDIO_SAMPLE_RATE);
+        format.setChannelCount(1);
+        format.setSampleFormat(QAudioFormat::Int16);
+
+        sink = new QAudioSink(QMediaDevices::defaultAudioOutput(), format, this);
+        sink->setBufferSize(AudioBytesForMs(AUDIO_SINK_BUFFER_MS));
+        device = sink->start();
+
+        drain_timer = new QTimer(this);
+        drain_timer->setTimerType(Qt::PreciseTimer);
+        drain_timer->setInterval(AUDIO_DRAIN_INTERVAL_MS);
+        connect(drain_timer, &QTimer::timeout, this, [this] { Drain(); });
+        drain_timer->start();
+        Drain();
     }
 
-    void Append(const char* data, qsizetype length)
+    void Enqueue(QByteArray samples)
     {
-        if (!data || length <= 0 || ring.empty())
+        if (samples.isEmpty())
             return;
 
-        {
-            std::scoped_lock lock(mutex);
-            size_t count = static_cast<size_t>(length);
-            if (count >= ring.size())
-            {
-                data += count - ring.size();
-                count = ring.size();
-                read_offset = 0;
-                buffered = 0;
-            }
-
-            const size_t overflow = buffered + count > ring.size()
-                ? buffered + count - ring.size()
-                : 0;
-            read_offset = (read_offset + overflow) % ring.size();
-            buffered -= overflow;
-
-            const size_t write_offset = (read_offset + buffered) % ring.size();
-            const size_t first = std::min(count, ring.size() - write_offset);
-            std::memcpy(ring.data() + write_offset, data, first);
-            if (count > first)
-                std::memcpy(ring.data(), data + first, count - first);
-            buffered += count;
-        }
-
-        Q_EMIT readyRead();
+        pending.append(samples);
+        const qsizetype capacity = AudioBytesForMs(AUDIO_QUEUE_MS);
+        if (pending.size() > capacity)
+            pending.remove(0, pending.size() - capacity);
+        Drain();
     }
 
-    bool isSequential() const override { return true; }
-
-    qint64 bytesAvailable() const override
+    void Shutdown()
     {
-        std::scoped_lock lock(mutex);
-        return static_cast<qint64>(buffered) + QIODevice::bytesAvailable();
-    }
-
-protected:
-    qint64 readData(char* data, const qint64 max_length) override
-    {
-        if (!data || max_length <= 0)
-            return 0;
-
-        const size_t requested = static_cast<size_t>(max_length);
-        size_t copied = 0;
+        if (drain_timer)
+            drain_timer->stop();
+        if (sink)
         {
-            std::scoped_lock lock(mutex);
-            copied = std::min(requested, buffered);
-            const size_t first = std::min(copied, ring.size() - read_offset);
-            std::memcpy(data, ring.data() + read_offset, first);
-            if (copied > first)
-                std::memcpy(data + first, ring.data(), copied - first);
-            read_offset = (read_offset + copied) % ring.size();
-            buffered -= copied;
+            sink->stop();
+            delete sink;
+            sink = nullptr;
+            device = nullptr;
         }
-
-        return static_cast<qint64>(copied);
+        pending.clear();
     }
-
-    qint64 writeData(const char*, qint64) override { return -1; }
 
 private:
-    mutable std::mutex mutex;
-    std::vector<char> ring;
-    size_t read_offset = 0;
-    size_t buffered = 0;
+    void Drain()
+    {
+        if (!sink || !device || pending.isEmpty())
+            return;
+
+        qint64 writable = sink->bytesFree();
+        while (writable > 0 && !pending.isEmpty())
+        {
+            const qint64 requested = std::min<qint64>(writable, pending.size());
+            const qint64 written = device->write(pending.constData(), requested);
+            if (written <= 0)
+                break;
+            pending.remove(0, written);
+            writable = sink->bytesFree();
+        }
+    }
+
+    QAudioSink* sink = nullptr;
+    QIODevice* device = nullptr;
+    QTimer* drain_timer = nullptr;
+    QByteArray pending;
 };
 #endif
 
 QtAudioSystem::QtAudioSystem(QObject* parent) : QObject(parent)
 {
+#ifdef __ANDROID__
+    android_audio_thread = new QThread(this);
+    android_audio_worker = new AndroidAudioWorker();
+    android_audio_worker->moveToThread(android_audio_thread);
+    connect(android_audio_thread, &QThread::started, android_audio_worker,
+            [worker = android_audio_worker] { worker->Initialize(); });
+    connect(android_audio_thread, &QThread::finished,
+            android_audio_worker, &QObject::deleteLater);
+    android_audio_thread->start();
+#else
     QAudioFormat fmt;
     fmt.setSampleRate(AUDIO_SAMPLE_RATE);
     fmt.setChannelCount(1);
     fmt.setSampleFormat(QAudioFormat::Int16);
 
     sink = new QAudioSink(QMediaDevices::defaultAudioOutput(), fmt, this);
-#ifdef __ANDROID__
-    sink->setBufferSize(AUDIO_SAMPLE_RATE * sizeof(int16_t) * AUDIO_SINK_BUFFER_MS / 1000);
-    buffered_device = new BufferedAudioDevice(
-        AUDIO_SAMPLE_RATE * sizeof(int16_t) * AUDIO_QUEUE_MS / 1000, this);
-    buffered_device->open(QIODevice::ReadOnly);
-    device = buffered_device;
-    sink->start(buffered_device);
-#else
     sink->setBufferSize(AUDIO_SAMPLE_RATE * sizeof(int16_t) / 10);
     device = sink->start();
 #endif
@@ -125,8 +124,16 @@ QtAudioSystem::~QtAudioSystem()
 {
     Flush();
 #ifdef __ANDROID__
-    sink->stop();
-    device->close();
+    if (android_audio_worker && android_audio_thread && android_audio_thread->isRunning())
+    {
+        QMetaObject::invokeMethod(
+            android_audio_worker,
+            [worker = android_audio_worker] { worker->Shutdown(); },
+            Qt::BlockingQueuedConnection);
+        android_audio_thread->quit();
+        android_audio_thread->wait();
+    }
+    android_audio_worker = nullptr;
 #else
     sink->disconnect();
     sink->stop();
@@ -201,12 +208,23 @@ void QtAudioSystem::PushSample(BuzzerInformation info)
 
 void QtAudioSystem::Flush()
 {
-    if (buffer.empty() || !device) return;
+    if (buffer.empty()) return;
 #ifdef __ANDROID__
-    buffered_device->Append(
-        reinterpret_cast<const char*>(buffer.data()),
-        static_cast<qsizetype>(buffer.size() * sizeof(int16_t)));
+    if (android_audio_worker)
+    {
+        QByteArray samples(
+            reinterpret_cast<const char*>(buffer.data()),
+            static_cast<qsizetype>(buffer.size() * sizeof(int16_t)));
+        QMetaObject::invokeMethod(
+            android_audio_worker,
+            [worker = android_audio_worker, samples = std::move(samples)]() mutable
+            {
+                worker->Enqueue(std::move(samples));
+            },
+            Qt::QueuedConnection);
+    }
 #else
+    if (!device) return;
     device->write(reinterpret_cast<const char*>(buffer.data()), buffer.size() * sizeof(int16_t));
 #endif
     buffer.clear();

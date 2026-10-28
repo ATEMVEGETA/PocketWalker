@@ -15,7 +15,10 @@
 #define AUDIO_MIN_FREQUENCY 120.0f
 #define AUDIO_FADE_SAMPLES (AUDIO_SAMPLE_RATE / 333)
 
-class BufferedAudioDevice;
+#ifdef __ANDROID__
+class AndroidAudioWorker;
+class QThread;
+#endif
 
 class QtAudioSystem : public QObject
 {
@@ -33,7 +36,8 @@ private:
     QAudioSink* sink = nullptr;
     QIODevice* device = nullptr;
 #ifdef __ANDROID__
-    BufferedAudioDevice* buffered_device = nullptr;
+    QThread* android_audio_thread = nullptr;
+    AndroidAudioWorker* android_audio_worker = nullptr;
 #endif
 
     std::vector<int16_t> buffer;
