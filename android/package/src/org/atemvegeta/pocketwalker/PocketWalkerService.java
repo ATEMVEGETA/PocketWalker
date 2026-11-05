@@ -27,6 +27,7 @@ public class PocketWalkerService extends Service implements SensorEventListener 
     private Sensor wakeStepSensor;
     private PowerManager.WakeLock wakeLock;
     private WifiManager.MulticastLock multicastLock;
+    private final Bma150AntiShakeFilter antiShakeFilter = new Bma150AntiShakeFilter();
     private boolean sensorIncludesGravity;
     private static final int MOTION_SAMPLE_PERIOD_US = 20_000;
     private static final long TASK_REMOVAL_SAVE_TIMEOUT_MS = 4_000;
@@ -90,6 +91,7 @@ public class PocketWalkerService extends Service implements SensorEventListener 
             if (motionSensor == null)
                 return;
             sensorIncludesGravity = motionSensor.getType() == Sensor.TYPE_ACCELEROMETER;
+            antiShakeFilter.reset(sensorIncludesGravity);
             boolean registered = sensorManager.registerListener(
                 this, motionSensor, MOTION_SAMPLE_PERIOD_US, 0);
             if (!registered) {
@@ -122,10 +124,12 @@ public class PocketWalkerService extends Service implements SensorEventListener 
             event.sensor.getType() != Sensor.TYPE_ACCELEROMETER)
             return;
 
-        // Forward the physical acceleration directly. The emulated BMA150
-        // converts it to sensor counts and the retail firmware alone decides
-        // whether the samples represent walking and how many steps to award.
-        nativeOnAcceleration(event.values[0], event.values[1], event.values[2]);
+        // Ordinary motion is forwarded unchanged. Sustained movement beyond
+        // the real BMA150's practical shake range is replaced with its neutral
+        // gravity reading until the motion returns to a human cadence.
+        antiShakeFilter.update(event.timestamp, event.values[0], event.values[1], event.values[2]);
+        nativeOnAcceleration(antiShakeFilter.getOutputX(),
+            antiShakeFilter.getOutputY(), antiShakeFilter.getOutputZ());
     }
 
     @Override
